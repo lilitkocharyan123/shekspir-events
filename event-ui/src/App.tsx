@@ -10,14 +10,7 @@ import type {
 } from './types'
 import { buildBadgeZpl } from './utils/zpl'
 
-const blankSearch: SearchFields = {
-  id: '',
-  first_name: '',
-  last_name: '',
-  phone: '',
-  email: '',
-  company: '',
-}
+const blankSearch: SearchFields = ''
 
 const printerStorageKey = 'shekspir/printer-config'
 
@@ -35,7 +28,7 @@ type Notification = {
 function App() {
   const [events, setEvents] = useState<EventRecord[]>([])
   const [selectedEventId, setSelectedEventId] = useState('')
-  const [searchFields, setSearchFields] = useState<SearchFields>(blankSearch)
+  const [searchTerm, setSearchTerm] = useState<SearchFields>(blankSearch)
   const [attendees, setAttendees] = useState<AttendeeRecord[]>([])
   const [isSearching, setIsSearching] = useState(false)
   const [isFetchingEvents, setIsFetchingEvents] = useState(false)
@@ -101,10 +94,6 @@ function App() {
 
   const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null)
 
-  const updateSearchField = (field: keyof SearchFields, value: string) => {
-    setSearchFields((prev) => ({ ...prev, [field]: value }))
-  }
-
   useEffect(() => {
     if (searchTimeoutRef.current) {
       clearTimeout(searchTimeoutRef.current)
@@ -114,43 +103,85 @@ function App() {
 
     searchTimeoutRef.current = setTimeout(async () => {
       const client = supabase
-      const hasFilters = Object.values(searchFields).some(
-        (fieldValue) => fieldValue.trim().length > 0,
-      )
+      const trimmedTerm = searchTerm.trim()
 
-      if (!hasFilters) {
+      if (!trimmedTerm) {
         setAttendees([])
         return
       }
 
       setIsSearching(true)
-      let query = client.from('attendee').select('*').limit(50)
+      
+      try {
+        // Search across all text columns with OR condition
+        const searchPattern = `%${trimmedTerm}%`
+        
+        // Build OR conditions for text fields only (UUID id doesn't support ilike)
+        const orConditions = [
+          `first_name.ilike.${searchPattern}`,
+          `last_name.ilike.${searchPattern}`,
+          `phone.ilike.${searchPattern}`,
+          `email.ilike.${searchPattern}`,
+          `company.ilike.${searchPattern}`,
+        ].join(',')
+        
+        // Search text fields
+        const { data: textData, error: textError } = await client
+          .from('attendee')
+          .select('*')
+          .or(orConditions)
 
-      Object.entries(searchFields).forEach(([field, value]) => {
-        if (!value.trim()) return
-        if (field === 'id') {
-          query = query.eq(field, value.trim())
-        } else {
-          query = query.ilike(field, `%${value.trim()}%`)
+        // Check if search term looks like a UUID before trying exact match
+        // UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx or 32 hex chars
+        const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+        const isUuid = uuidPattern.test(trimmedTerm)
+        
+        let idData = null
+        let idError = null
+        
+        // Only try ID exact match if it looks like a UUID
+        if (isUuid) {
+          const idResult = await client
+            .from('attendee')
+            .select('*')
+            .eq('id', trimmedTerm)
+          idData = idResult.data
+          idError = idResult.error
         }
-      })
 
-      const { data, error } = await query
-      if (error) {
+        if (textError || idError) {
+          console.error('Search error:', textError || idError)
+          setNotification({
+            type: 'error',
+            message: `Search failed: ${(textError || idError)?.message || 'Unknown error'}`,
+          })
+          setAttendees([])
+        } else {
+          // Combine results and remove duplicates
+          const combined = [...(textData ?? []), ...(idData ?? [])]
+          const unique = Array.from(
+            new Map(combined.map((item) => [item.id, item])).values()
+          )
+          
+          console.log('Search results:', unique.length, 'attendees found')
+          setAttendees(unique)
+          if (unique.length === 0) {
+            setNotification({
+              type: 'info',
+              message: 'No attendees matched your search.',
+            })
+          }
+        }
+      } catch (err) {
+        console.error('Search exception:', err)
         setNotification({
           type: 'error',
-          message: `Search failed: ${error.message}`,
+          message: `Search error: ${err instanceof Error ? err.message : 'Unknown error'}`,
         })
-      } else {
-        setAttendees(data ?? [])
-        if ((data ?? []).length === 0) {
-          setNotification({
-            type: 'info',
-            message: 'No attendees matched your search.',
-          })
-        }
+        setAttendees([])
+      } finally {
+        setIsSearching(false)
       }
-      setIsSearching(false)
     }, 300)
 
     return () => {
@@ -158,10 +189,10 @@ function App() {
         clearTimeout(searchTimeoutRef.current)
       }
     }
-  }, [searchFields, supabase])
+  }, [searchTerm, supabase])
 
   const handleReset = () => {
-    setSearchFields(blankSearch)
+    setSearchTerm(blankSearch)
     setAttendees([])
   }
 
@@ -380,68 +411,14 @@ function App() {
           </div>
         </div>
         <div className="search-form">
-          <div className="grid grid-3">
-            <label>
-              ID
-              <input
-                value={searchFields.id}
-                onChange={(event) => updateSearchField('id', event.target.value)}
-                placeholder="Internal ID"
-              />
-            </label>
-            <label>
-              First name
-              <input
-                value={searchFields.first_name}
-                onChange={(event) =>
-                  updateSearchField('first_name', event.target.value)
-                }
-                placeholder="Jane"
-              />
-            </label>
-            <label>
-              Last name
-              <input
-                value={searchFields.last_name}
-                onChange={(event) =>
-                  updateSearchField('last_name', event.target.value)
-                }
-                placeholder="Doe"
-              />
-            </label>
-          </div>
-          <div className="grid grid-3">
-            <label>
-              Phone
-              <input
-                value={searchFields.phone}
-                onChange={(event) =>
-                  updateSearchField('phone', event.target.value)
-                }
-                placeholder="+1 555 1234"
-              />
-            </label>
-            <label>
-              Email
-              <input
-                value={searchFields.email}
-                onChange={(event) =>
-                  updateSearchField('email', event.target.value)
-                }
-                placeholder="user@company.com"
-              />
-            </label>
-            <label>
-              Company
-              <input
-                value={searchFields.company}
-                onChange={(event) =>
-                  updateSearchField('company', event.target.value)
-                }
-                placeholder="Shekspir"
-              />
-            </label>
-          </div>
+          <label>
+            Search
+            <input
+              value={searchTerm}
+              onChange={(event) => setSearchTerm(event.target.value)}
+              placeholder="Search by name, email, phone, company, or ID..."
+            />
+          </label>
           <div className="actions">
             {isSearching && <span className="pill">Searching…</span>}
             <button

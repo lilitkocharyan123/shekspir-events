@@ -1,11 +1,4 @@
-export type SearchFields = {
-  id: string;
-  first_name: string;
-  last_name: string;
-  phone: string;
-  email: string;
-  company: string;
-};
+export type SearchFields = string;
 
 export type PrinterConfig = {
   serviceUrl: string;
