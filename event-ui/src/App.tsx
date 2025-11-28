@@ -1,5 +1,4 @@
-import type { FormEvent } from 'react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 import { supabase } from './lib/supabaseClient'
 import type {
@@ -100,62 +99,66 @@ function App() {
     return events.find((event) => event.id === numericId)
   }, [events, selectedEventId])
 
+  const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+
   const updateSearchField = (field: keyof SearchFields, value: string) => {
     setSearchFields((prev) => ({ ...prev, [field]: value }))
   }
 
-  const handleSearch = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
-    if (!supabase) {
-      setNotification({
-        type: 'error',
-        message: 'Supabase credentials missing. Update your .env file.',
-      })
-      return
-    }
-    const client = supabase
-
-    const hasFilters = Object.values(searchFields).some(
-      (fieldValue) => fieldValue.trim().length > 0,
-    )
-
-    if (!hasFilters) {
-      setNotification({
-        type: 'info',
-        message: 'Enter at least one search value.',
-      })
-      return
+  useEffect(() => {
+    if (searchTimeoutRef.current) {
+      clearTimeout(searchTimeoutRef.current)
     }
 
-    setIsSearching(true)
-    let query = client.from('attendee').select('*').limit(50)
+    if (!supabase) return
 
-    Object.entries(searchFields).forEach(([field, value]) => {
-      if (!value.trim()) return
-      if (field === 'id') {
-        query = query.eq(field, value.trim())
-      } else {
-        query = query.ilike(field, `%${value.trim()}%`)
+    searchTimeoutRef.current = setTimeout(async () => {
+      const client = supabase
+      const hasFilters = Object.values(searchFields).some(
+        (fieldValue) => fieldValue.trim().length > 0,
+      )
+
+      if (!hasFilters) {
+        setAttendees([])
+        return
       }
-    })
 
-    const { data, error } = await query
-    if (error) {
-      setNotification({
-        type: 'error',
-        message: `Search failed: ${error.message}`,
+      setIsSearching(true)
+      let query = client.from('attendee').select('*').limit(50)
+
+      Object.entries(searchFields).forEach(([field, value]) => {
+        if (!value.trim()) return
+        if (field === 'id') {
+          query = query.eq(field, value.trim())
+        } else {
+          query = query.ilike(field, `%${value.trim()}%`)
+        }
       })
-    } else {
-      setAttendees(data ?? [])
-      if ((data ?? []).length === 0) {
+
+      const { data, error } = await query
+      if (error) {
         setNotification({
-          type: 'info',
-          message: 'No attendees matched your search.',
+          type: 'error',
+          message: `Search failed: ${error.message}`,
         })
+      } else {
+        setAttendees(data ?? [])
+        if ((data ?? []).length === 0) {
+          setNotification({
+            type: 'info',
+            message: 'No attendees matched your search.',
+          })
+        }
+      }
+      setIsSearching(false)
+    }, 300)
+
+    return () => {
+      if (searchTimeoutRef.current) {
+        clearTimeout(searchTimeoutRef.current)
       }
     }
-    setIsSearching(false)
-  }
+  }, [searchFields, supabase])
 
   const handleReset = () => {
     setSearchFields(blankSearch)
@@ -376,7 +379,7 @@ function App() {
             <p>All fields are optional, use any combination for lookup.</p>
           </div>
         </div>
-        <form className="search-form" onSubmit={handleSearch}>
+        <div className="search-form">
           <div className="grid grid-3">
             <label>
               ID
@@ -440,9 +443,7 @@ function App() {
             </label>
           </div>
           <div className="actions">
-            <button type="submit" disabled={!supabaseReady || isSearching}>
-              {isSearching ? 'Searching…' : 'Search'}
-            </button>
+            {isSearching && <span className="pill">Searching…</span>}
             <button
               type="button"
               className="secondary"
@@ -450,9 +451,9 @@ function App() {
               disabled={isSearching}
             >
               Reset
-        </button>
+            </button>
           </div>
-        </form>
+        </div>
       </section>
 
       <section className="panel">
